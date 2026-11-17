@@ -1,0 +1,26 @@
+# Go
+/bin/
+*.test
+*.out
+coverage.*
+
+# Environment and local data
+.env
+.env.*
+!.env.example
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Web
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+web/public/tollgate.wasm
+web/public/wasm_exec.js
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

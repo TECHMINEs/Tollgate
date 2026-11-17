@@ -1,0 +1,104 @@
+# Local stack: Postgres (row-level security), Redpanda (Kafka API), Redpanda Console,
+# and the Tollgate auditor and outbox relay. Every credential here is a local
+# development default.
+#
+#   docker compose up -d --build
+#   docker compose run --rm simulate          # produce a synthetic scenario
+#   docker compose run --rm report            # per-tenant totals through RLS
+#   open http://localhost:8080                # topics, partitions, consumer lag
+
+name: tollgate
+
+x-tollgate-env: &tollgate-env
+  TOLLGATE_ADMIN_URL: postgres://tollgate:tollgate_dev@postgres:5432/tollgate
+  TOLLGATE_DATABASE_URL: postgres://tollgate_app:tollgate_app_dev@postgres:5432/tollgate
+  TOLLGATE_PUBLISHER_URL: postgres://tollgate_publisher:tollgate_publisher_dev@postgres:5432/tollgate
+  TOLLGATE_BROKERS: redpanda:9092
+
+services:
+  postgres:
+    image: postgres:17.12-alpine
+    environment:
+      POSTGRES_DB: tollgate
+      POSTGRES_USER: tollgate
+      POSTGRES_PASSWORD: tollgate_dev
+    ports: ["5432:5432"]
+    volumes:
+      - ./deploy/postgres:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tollgate -d tollgate"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redpanda:
+    image: redpandadata/redpanda:v26.2.7
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --set=redpanda.auto_create_topics_enabled=false
+    ports: ["19092:19092"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  console:
+    image: redpandadata/console:v3.14.0
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports: ["8080:8080"]
+    depends_on:
+      redpanda: { condition: service_healthy }
+
+  setup:
+    build: .
+    environment: *tollgate-env
+    command: ["setup"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+
+  auditor:
+    build: .
+    command: ["auditor"]
+    environment:
+      <<: *tollgate-env
+      TOLLGATE_HEALTH_ADDR: ":8081"
+    restart: unless-stopped
+    depends_on:
+      setup: { condition: service_completed_successfully }
+
+  outbox:
+    build: .
+    command: ["outbox"]
+    environment: *tollgate-env
+    restart: unless-stopped
+    depends_on:
+      setup: { condition: service_completed_successfully }
+
+  simulate:
+    build: .
+    command: ["simulate", "--shipments", "40"]
+    environment: *tollgate-env
+    profiles: [tools]
+    depends_on:
+      setup: { condition: service_completed_successfully }
+
+  report:
+    build: .
+    command: ["report"]
+    environment: *tollgate-env
+    profiles: [tools]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+volumes:
+  pgdata:
